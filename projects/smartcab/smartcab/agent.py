@@ -2,6 +2,7 @@ import random
 from environment import Agent, Environment
 from planner import RoutePlanner
 from simulator import Simulator
+import numpy as np
 
 class LearningAgent(Agent):
     """An agent that learns to drive in the smartcab world."""
@@ -11,10 +12,51 @@ class LearningAgent(Agent):
         self.color = 'red'  # override color
         self.planner = RoutePlanner(self.env, self)  # simple route planner to get next_waypoint
         # TODO: Initialize any additional variables here
+        self.actions =  [None, 'forward', 'left', 'right']
+        self.state_q_dict = {}
+        
+        
+        self.learning_rate = 0.5
+        self.discount_rate = 0.5
+        self.random_prob_start = .2
+
+
+
+        self.random_prob = self.random_prob_start
+        self.cumulative_reward = 0
+        self.cumulative_penalties = 0
+        self.successes = []
+        self.all_times_remaining = []
+        self.time_remaining = None
+        
+        self.currentSuccess = False
+        
+        
+    
 
     def reset(self, destination=None):
         self.planner.route_to(destination)
         # TODO: Prepare for a new trip; reset any variables here, if required
+        # if self.currentSuccess:
+        #     print "adding 1 to successes"
+        # else:
+        #     print "adding 0 to successes"
+
+        self.successes.append(1 if self.currentSuccess else 0)
+        self.all_times_remaining.append(self.time_remaining if self.currentSuccess else 0)       
+        self.currentSuccess = False
+        #make self.random_prob go down over time to a very small amount, to end up at 0 at trial #75
+
+        self.random_prob = -len(self.successes)*self.random_prob_start/75 + self.random_prob_start
+        
+
+        print "Total successes: {}, Cumulative Reward: {}, Last failure: {}".format(np.sum(self.successes),self.cumulative_reward,self.find_last_failure())
+
+        
+    def find_last_failure(self):
+        if 0 in self.successes:
+            return (len(self.successes) - self.successes[::-1].index(0))-1
+        return -1
 
     def update(self, t):
         # Gather inputs
@@ -23,16 +65,69 @@ class LearningAgent(Agent):
         deadline = self.env.get_deadline(self)
 
         # TODO: Update state
+        curr_state = (self.next_waypoint, inputs['light'],inputs['oncoming'],inputs['right'],inputs['left'])
+
+        if curr_state not in self.state_q_dict:
+            
+            self.state_q_dict[curr_state] = {}
+
+            #this initialization works great but seems like it's kind of cheating
+            # for act in self.actions:
+            #     if act == None:
+            #         new_val = random.random()-1
+            #     else:
+            #         new_val = random.random()
+            #     self.state_q_dict[curr_state][act] = new_val
+
+            #this puts everything in an equal playing field with starting Q values between -.5 and .5
+            for act in self.actions:
+                self.state_q_dict[curr_state][act] = random.random()-.5
+
+
+
+        action_q_dict = self.state_q_dict[curr_state]
+
+
+
         
         # TODO: Select action according to your policy
-        action = None
+        action = max(action_q_dict.keys(),key = lambda x: action_q_dict[x])
+
+        if random.random() < self.random_prob:
+            action = random.choice(self.actions)
+
+       
 
         # Execute action and get reward
         reward = self.env.act(self, action)
+        self.cumulative_reward += reward
+        if reward < 0:
+            self.cumulative_penalties += reward
+
+        if reward >= 3.:
+            #print "hello"
+            
+            self.currentSuccess = True
+            self.time_remaining = deadline
+            #print "Success achieved!"
+
 
         # TODO: Learn policy based on state, action, reward
+        avg_q = self.get_average_q()
+        update = self.learning_rate*(reward + self.discount_rate*avg_q)
+        self.state_q_dict[curr_state][action] = update + (1-self.learning_rate)*self.state_q_dict[curr_state][action]
 
-        print "LearningAgent.update(): deadline = {}, inputs = {}, action = {}, reward = {}".format(deadline, inputs, action, reward)  # [debug]
+        #print "LearningAgent.update(): next_waypoint = {}".format(self.next_waypoint)
+
+        #print "LearningAgent.update(): deadline = {}, inputs = {}, action = {}, reward = {}".format(deadline, inputs, action, reward)  # [debug]
+
+    def get_average_q(self):
+        all_rewards = []
+        for state in self.state_q_dict:
+            for action in self.state_q_dict[state]:
+                all_rewards.append(self.state_q_dict[state][action])
+        return np.mean(all_rewards)
+
 
 
 def run():
@@ -45,12 +140,42 @@ def run():
     # NOTE: You can set enforce_deadline=False while debugging to allow longer trials
 
     # Now simulate it
-    sim = Simulator(e, update_delay=0.5, display=True)  # create simulator (uses pygame when display=True, if available)
+    sim = Simulator(e, update_delay=0.4, display=True)  # create simulator (uses pygame when display=True, if available)
     # NOTE: To speed up simulation, reduce update_delay and/or set display=False
 
     sim.run(n_trials=100)  # run for a specified number of trials
     # NOTE: To quit midway, press Esc or close pygame window, or hit Ctrl+C on the command-line
+    num_successes = np.sum(a.successes)
+    last_failure = a.find_last_failure()
+    total_penalty = a.cumulative_penalties
+    avg_time_remaining = np.mean(a.all_times_remaining)
+
+    print "Total number of successes: {}".format(num_successes)
+    print "Failure last occurred at trial: {}".format(last_failure)
+    print 'Total penalties incurred: {}'.format(total_penalty)
+    print "Average time remaining: {}".format(avg_time_remaining)
+
+    
+    return (num_successes,last_failure,total_penalty,avg_time_remaining)
+
 
 
 if __name__ == '__main__':
-    run()
+    
+    #lists for results over multiple runs
+    # all_avg_time_remaining = []
+    # all_num_successes = []
+    # all_last_failures = []
+    # all_total_penalties = []    
+    # for i in range(10):
+    #     (n_successes,last_failure,total_penalty,avg_time_remaining) = run()
+    #     all_num_successes.append(n_successes)
+    #     all_last_failures.append(last_failure)
+    #     all_total_penalties.append(total_penalty)
+    #     all_avg_time_remaining.append(avg_time_remaining)
+    # print "Num successes: {}, mean: {}".format(all_num_successes,np.mean(all_num_successes))
+    # print "Last failures: {}, mean: {}".format(all_last_failures,np.mean(all_last_failures))
+    # print "total penalties: {}, mean: {}".format(all_total_penalties,np.mean(all_total_penalties))
+    # print "Avg times remaining: {}, mean: {}".format(all_avg_time_remaining,np.mean(all_avg_time_remaining))
+
+    results = run()
